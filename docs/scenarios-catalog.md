@@ -4,11 +4,11 @@ This guide walks through 7 production patterns where AI Agents fail without tran
 
 ---
 
-## Scenario 1: Local Decorator & ActionReceipts
-**File:** [`examples/01_quickstart_decorator.py`](../examples/01_quickstart_decorator.py)
+## Scenario 1: Standing Up a Remote Transactional MCP Server (`RewindServer`)
+**File:** [`examples/01_remote_mcp_server_quickstart.py`](../examples/01_remote_mcp_server_quickstart.py)
 
-- **Problem:** An agent creates a resource (e.g., an order or database row) that generates a server-side UUID (`res_901`). When a later step fails, the rollback function needs `res_901`, which wasn't part of the original input arguments.
-- **Solution:** Return `ActionReceipt(result=..., undo_args={"reservation_id": "res_901"})`. `AgentRewind` transparently returns `.result` to your agent while binding `.undo_args` to the LIFO compensation stack.
+- **Problem:** An AI Agent connects to a remote MCP microservice that mutates orders and inventory. If a later tool fails, the remote server must undo its own database mutations without exposing internal database rollback logic to the client agent.
+- **Solution:** Stand up a `RewindServer(MCPServer)` with `@server.tool(compensate=..., pre_state=..., deferred=...)`. The server mints opaque `undo_token` leases (`CallToolResult._meta["rewind"]["undo_token"]`) and automatically rolls back when the client's `AgentRewind` context aborts.
 
 ---
 

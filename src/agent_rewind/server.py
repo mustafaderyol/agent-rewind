@@ -25,7 +25,7 @@ from collections.abc import Callable
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
-from mcp.types import CallToolResult, TextContent, Tool, ToolAnnotations
+from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool, ToolAnnotations
 
 from agent_rewind.adapters import to_mcp_tool_schema
 from agent_rewind.decorators import (
@@ -201,6 +201,12 @@ class RewindServer(MCPServer):
     def list_tools(self) -> dict[str, list[dict[str, Any]]]:  # type: ignore[override]
         """Return MCP `ListToolsResult` dictionary."""
         return self.list_tools_dict()
+
+    async def _handle_list_tools(
+        self, ctx: Any, params: Any = None
+    ) -> ListToolsResult:
+        """Override official `MCPServer._handle_list_tools` for Streamable HTTP / SSE / stdio sessions."""
+        return ListToolsResult(tools=await self.list_mcp_tools())
 
     async def call_tool(
         self,
@@ -673,3 +679,16 @@ class RewindServer(MCPServer):
             return {"output": out}
 
         return router
+
+    def create_fastapi_app(self, title: str | None = None, **fastapi_kwargs: Any) -> Any:
+        """Create a standalone `FastAPI` application exposing MCP JSON-RPC (`POST /mcp`) and LangServe routes."""
+        from fastapi import FastAPI
+
+        app = FastAPI(
+            title=title or f"{self.service_name} (Transactional MCP Server)",
+            version=self.version or "0.2.0",
+            **fastapi_kwargs,
+        )
+        app.include_router(self.create_fastapi_router())
+        return app
+

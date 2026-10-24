@@ -41,21 +41,22 @@ sequenceDiagram
 
 ---
 
-## Step 1: How to Write a Transactional MCP Server (`RewindServer`)
+## Step 1: How to Write & Stand Up a Transactional MCP Server (`RewindServer`)
 
-[`RewindServer`](../src/agent_rewind/server.py) is a **100% spec-compliant MCP JSON-RPC 2.0 Server** that supports:
-- **MCP Streamable HTTP** (`POST /mcp` JSON-RPC 2.0 endpoint)
-- **MCP `stdio` Transport** (`server.run_stdio()` for Claude Desktop, Cursor, Windsurf, or `mcp.client.stdio`)
-- **Official Anthropic `FastMCP` Integration** (`server.mount_to_fastmcp(fastmcp_app)`)
-- **LangServe `RemoteRunnable` Compatibility** (`POST /{tool_name}/invoke`)
+[`RewindServer`](../src/agent_rewind/server.py) directly subclasses **`mcp.server.mcpserver.MCPServer`** from the official [`modelcontextprotocol/python-sdk`](https://github.com/modelcontextprotocol/python-sdk) package and supports **5 production deployment modes**:
+1. **Official MCP Streamable HTTP Server:** `server.run(transport="streamable-http", host="0.0.0.0", port=8000)`
+2. **Official MCP SSE Server:** `server.run(transport="sse", host="0.0.0.0", port=8000)`
+3. **Standalone FastAPI / Uvicorn Server (MCP + LangServe `RemoteRunnable`):** `app = server.create_fastapi_app()`
+4. **Mounting onto an Existing FastAPI App:** `app.include_router(server.create_fastapi_router())`
+5. **Official MCP `stdio` Transport:** `server.run(transport="stdio")` (or `server.run_stdio()`)
 
-### `mcp_server.py` (Remote MCP Server)
+### `mcp_server.py` (Remote MCP Server Definition)
 
 ```python
 from typing import Any
-from fastapi import FastAPI
 from agent_rewind import RewindServer
 
+# Directly subclasses `mcp.server.mcpserver.MCPServer`
 server = RewindServer(name="crm-and-erp-mcp-server", version="0.2.0", default_lease_ttl=120.0)
 
 # Simulated Remote Databases
@@ -93,34 +94,65 @@ async def undo_reserve_stock(args: dict[str, Any], result: dict[str, Any], pre_s
 async def reserve_stock(sku: str, qty: int) -> dict[str, Any]:
     STOCK_DB[sku] -= qty
     return {"sku": sku, "remaining": STOCK_DB[sku]}
-
-
-# Option A: Expose over HTTP / FastAPI (`POST /mcp` JSON-RPC 2.0 + `/{tool_name}/invoke`)
-app = FastAPI(title="Transactional MCP Server")
-app.include_router(server.create_fastapi_router())
-
-# Option B: Or run as an MCP `stdio` server (for Claude Desktop / Cursor / stdio clients):
-if __name__ == "__main__":
-    server.run_stdio()
 ```
 
-### Option C: Mounting onto an Official Anthropic `FastMCP` Instance
+---
 
-If you already use `from mcp.server.fastmcp import FastMCP`, you can mount `RewindServer` directly onto it:
+### How to Stand Up & Deploy `mcp_server.py`
 
+#### Deployment Mode 1: Official MCP Streamable HTTP (`server.run`)
+Launch directly using the inherited `MCPServer.run` method from `mcp`:
 ```python
-from mcp.server.fastmcp import FastMCP
+if __name__ == "__main__":
+    server.run(transport="streamable-http", host="0.0.0.0", port=8000)
+```
+Or expose the Starlette ASGI app to `uvicorn` / `gunicorn`:
+```python
+app = server.streamable_http_app()
+# Terminal: uvicorn mcp_server:app --host 0.0.0.0 --port 8000 --workers 4
+```
+
+#### Deployment Mode 2: FastAPI + LangServe `RemoteRunnable` (`create_fastapi_app`)
+When you want a single server to simultaneously serve **MCP JSON-RPC 2.0 (`POST /mcp`)**, **REST discovery (`GET /mcp/tools`)**, and **LangChain `RemoteRunnable` (`POST /{tool_name}/invoke`)**:
+```python
+app = server.create_fastapi_app(title="Enterprise Transactional MCP Server")
+# Terminal: uvicorn mcp_server:app --host 0.0.0.0 --port 8000
+```
+Or mount onto your existing `FastAPI` service:
+```python
+from fastapi import FastAPI
+
+app = FastAPI()
+app.include_router(server.create_fastapi_router())
+```
+
+#### Deployment Mode 3: Official MCP Server-Sent Events (`SSE`)
+```python
+if __name__ == "__main__":
+    server.run(transport="sse", host="0.0.0.0", port=8000)
+```
+
+#### Deployment Mode 4: Official MCP `stdio` Transport (Claude Desktop / Cursor / Stdio Clients)
+```python
+if __name__ == "__main__":
+    server.run(transport="stdio")
+```
+
+#### Deployment Mode 5: Mounting onto Another `MCPServer` Instance (`mount_to_fastmcp`)
+If you already have an existing `mcp.server.mcpserver.MCPServer` instance, mount `RewindServer` onto it:
+```python
+from mcp.server.mcpserver import MCPServer
 from agent_rewind import RewindServer
 
-mcp_app = FastMCP("enterprise-mcp")
+existing_mcp = MCPServer("enterprise-mcp")
 rewind_srv = RewindServer("enterprise-mcp")
 
 @rewind_srv.tool(compensate=undo_create_order)
 async def create_order(customer: str, sku: str, qty: int) -> dict:
     ...
 
-# Registers all @rewind_srv.tool functions + _rewind_rollback + _rewind_commit on FastMCP!
-rewind_srv.mount_to_fastmcp(mcp_app)
+# Registers all @rewind_srv.tool functions + _rewind_rollback + _rewind_commit!
+rewind_srv.mount_to_fastmcp(existing_mcp)
 ```
 
 ### Supported MCP JSON-RPC 2.0 Methods on `RewindServer`
@@ -232,13 +264,96 @@ if __name__ == "__main__":
 
 ---
 
-## Step 3: Multi-Agent Orchestration (`StateGraph` + Google A2A + `RewindSubAgentHost`)
+## Step 3: How to Create a Transactional Multi-Agent Graph (`StateGraph` + Google A2A + `RewindSubAgentHost`)
 
 When building a **Multi-Agent System** (e.g., a LangGraph `StateGraph` where a `supervisor` routes work across `remote_agent_1`, `remote_agent_2`, `remote_agent_3` over LangServe `RemoteRunnable` or **Google A2A Protocol** `tasks/send` / `tasks/cancel`):
 
-1. **On Each Remote Sub-Agent Server (`RewindSubAgentHost`)**:
-   Wrap your sub-agent with [`RewindSubAgentHost`](../src/agent_rewind/protocols.py). Even if `remote_agent_1` executes multiple internal `@rewind_tool` mutations on its own server, `tx.export_undo_lease()` bundles all of them into a single composite `undo_token` attached to `AIMessage.response_metadata["rewind"]`, MCP `_meta.rewind`, or A2A `Task.metadata.rewind`.
+1. **On Each Remote Sub-Agent Server (`RewindSubAgentHost` / `RewindA2AExecutor`)**:
+   Wrap your sub-agent with [`RewindSubAgentHost`](../src/agent_rewind/protocols.py) (or [`RewindA2AExecutor`](../src/agent_rewind/protocols.py), which subclasses `a2a.server.agent_execution.AgentExecutor`). Even if `remote_agent_1` executes multiple internal tool mutations on its own server, `tx.export_undo_lease()` bundles all of them into a single composite `undo_token` attached to `AIMessage.response_metadata["rewind"]`, MCP `_meta.rewind`, or A2A `Task.metadata.rewind`.
 2. **On the Supervisor / Orchestrator (`rewind_agent` + `rewind_graph`)**:
    Wrap each `RemoteRunnable` or A2A client with [`rewind_agent(...)`](../src/agent_rewind/protocols.py) and wrap `workflow.compile()` with [`rewind_graph(...)`](../src/agent_rewind/protocols.py).
    If `remote_3` fails later in the graph, `AgentRewind` automatically rewinds `remote_2` (e.g., via standard A2A `tasks/cancel`) and `remote_1` (unwinding all of its internal tool calls) in strict LIFO order!
+
+```python
+from typing import Literal, TypedDict
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain_openai import ChatOpenAI
+from langchain_core.runnables import RemoteRunnable
+from langgraph.graph import END, START, StateGraph
+
+from agent_rewind import rewind_agent, rewind_graph
+
+class AgentState(TypedDict):
+    messages: list
+    sender: str
+    next_step: str
+
+local_llm = ChatOpenAI(model="gpt-4o", temperature=0)
+
+# 1. Wrap Remote Sub-Agents with `rewind_agent()`
+remote_agent_1 = rewind_agent(RemoteRunnable("https://remote-service-1.com/agent"), name="remote_1")
+remote_agent_2 = rewind_agent(RemoteRunnable("https://remote-service-2.com/agent"), name="remote_2")
+remote_agent_3 = rewind_agent(RemoteRunnable("https://remote-service-3.com/agent"), name="remote_3")
+
+def local_supervisor_node(state: AgentState):
+    prompt = "Analyze the task and choose the next agent: remote_1, remote_2, remote_3, local_worker, or FINISH."
+    response = local_llm.invoke(state["messages"] + [HumanMessage(content=prompt)])
+    return {"next_step": response.content.strip()}
+
+def local_worker_node(state: AgentState):
+    response = local_llm.invoke(state["messages"])
+    return {"messages": [response], "sender": "local_worker"}
+
+def remote_node_1(state: AgentState):
+    res = remote_agent_1.invoke({"messages": state["messages"]})
+    return {"messages": [AIMessage(content=str(res))], "sender": "remote_1"}
+
+def remote_node_2(state: AgentState):
+    res = remote_agent_2.invoke({"messages": state["messages"]})
+    return {"messages": [AIMessage(content=str(res))], "sender": "remote_2"}
+
+def remote_node_3(state: AgentState):
+    res = remote_agent_3.invoke({"messages": state["messages"]})
+    return {"messages": [AIMessage(content=str(res))], "sender": "remote_3"}
+
+workflow = StateGraph(AgentState)
+
+workflow.add_node("supervisor", local_supervisor_node)
+workflow.add_node("local_worker", local_worker_node)
+workflow.add_node("remote_1", remote_node_1)
+workflow.add_node("remote_2", remote_node_2)
+workflow.add_node("remote_3", remote_node_3)
+
+workflow.add_edge(START, "supervisor")
+
+workflow.add_conditional_edges(
+    "supervisor",
+    lambda x: x["next_step"],
+    {
+        "local_worker": "local_worker",
+        "remote_1": "remote_1",
+        "remote_2": "remote_2",
+        "remote_3": "remote_3",
+        "FINISH": END,
+    },
+)
+
+workflow.add_edge("local_worker", "supervisor")
+workflow.add_edge("remote_1", "supervisor")
+workflow.add_edge("remote_2", "supervisor")
+workflow.add_edge("remote_3", "supervisor")
+
+# 2. Wrap `workflow.compile()` with `rewind_graph()`
+multi_agent_system = rewind_graph(workflow.compile())
+
+if __name__ == "__main__":
+    initial_state = {
+        "messages": [HumanMessage(content="Execute complex multi-agent workflow.")],
+        "sender": "user",
+        "next_step": "",
+    }
+    result = multi_agent_system.invoke(initial_state)
+    print(result["messages"][-1].content)
+```
+
 

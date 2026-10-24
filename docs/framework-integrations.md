@@ -4,48 +4,35 @@
 
 ---
 
-## 1. OpenAI Tool Calling (`openai` SDK)
+## 1. Standing Up a Remote Transactional MCP Server (`RewindServer`)
 
-Wrap your tool dispatch loop inside `async with AgentRewind() as tx:` so that if a multi-tool turn fails midway, all prior tool mutations in that turn are automatically rolled back.
+`RewindServer` directly subclasses `mcp.server.mcpserver.MCPServer` from the official `mcp` SDK. Define `@server.tool(compensate=..., pre_state=..., deferred=...)` privately on your server and stand it up via Streamable HTTP, FastAPI/Uvicorn, SSE, or `stdio`:
 
 ```python
-import json
-from agent_rewind import ActionReceipt, AgentRewind, rewind_tool
+from agent_rewind import RewindServer
+
+server = RewindServer(name="crm-mcp-server", version="0.2.0", default_lease_ttl=60.0)
+TICKETS_DB: dict[str, dict] = {}
 
 
-async def cancel_jira_ticket(ticket_id: str) -> None:
-    print(f"[UNDO] Deleting Jira ticket {ticket_id}")
+@server.tool(
+    name="create_jira_ticket",
+    description="Create a Jira ticket in the remote issue tracker.",
+    compensate=lambda args, res: TICKETS_DB.pop(res["ticket_id"], None),
+)
+async def create_jira_ticket(summary: str) -> dict:
+    ticket_id = f"JIRA-{len(TICKETS_DB) + 901}"
+    TICKETS_DB[ticket_id] = {"ticket_id": ticket_id, "summary": summary}
+    return TICKETS_DB[ticket_id]
 
 
-@rewind_tool(compensate=cancel_jira_ticket)
-async def create_jira_ticket(summary: str) -> ActionReceipt:
-    ticket_id = "JIRA-901"
-    return ActionReceipt(
-        result={"ticket_id": ticket_id, "summary": summary},
-        undo_args={"ticket_id": ticket_id},
-    )
+# Launch Option A: Official MCP Streamable HTTP Server
+if __name__ == "__main__":
+    server.run(transport="streamable-http", host="0.0.0.0", port=8000)
 
-
-TOOL_REGISTRY = {
-    "create_jira_ticket": create_jira_ticket,
-}
-
-
-async def execute_openai_tool_calls(tool_calls: list) -> list[dict]:
-    results = []
-    # Optional: Enforce that the LLM respects the prompt's mandatory tool sequence
-    policy = PolicyGuard().require_sequence([
-        "create_jira_ticket",
-        "assign_engineer",
-        "notify_channel",
-    ])
-    async with AgentRewind(policy=policy) as tx:
-        for call in tool_calls:
-            fn = TOOL_REGISTRY[call.function.name]
-            kwargs = json.loads(call.function.arguments)
-            output = await tx.run(fn, **kwargs)
-            results.append({"tool_call_id": call.id, "output": output})
-    return results
+# Launch Option B: FastAPI + Uvicorn (Serves MCP `/mcp` + LangServe `/{tool}/invoke`)
+# app = server.create_fastapi_app()
+# Terminal: uvicorn server:app --host 0.0.0.0 --port 8000
 ```
 
 ---

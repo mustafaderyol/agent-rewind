@@ -8,8 +8,8 @@ This directory contains **10 self-contained, runnable Python scripts** demonstra
 
 | # | Script | What It Demonstrates |
 | :--- | :--- | :--- |
-| **01** | [`01_quickstart_decorator.py`](01_quickstart_decorator.py) | `@rewind_tool`, `ActionReceipt`, LIFO undo stack, and `deferred=True` Outbox buffering. |
-| **02** | [`02_distributed_four_systems_saga.py`](02_distributed_four_systems_saga.py) | 4-Service Saga (CRM, ERP, Payment, Email) with Step 3 Prompt Injection blocking, 503 crash rollback, and happy-path commit. |
+| **01** | [`01_remote_mcp_server_quickstart.py`](01_remote_mcp_server_quickstart.py) | Standing up a Remote MCP Server (`RewindServer(MCPServer)`) with server-side compensation, Outbox buffering, and automatic `undo_token` rollback. |
+| **02** | [`02_distributed_four_systems_saga.py`](02_distributed_four_systems_saga.py) | 4-Server MCP Cluster (`crm`, `erp`, `payment`, `notify`) with Step 3 Prompt Injection blocking, 503 crash rollback, and happy-path commit. |
 | **03** | [`03_remote_mcp_autodiscovery.py`](03_remote_mcp_autodiscovery.py) | Zero-config `RemoteMCPGateway.discover(urls)` connecting to 4 MCP servers using **only their URLs**. |
 | **04** | [`04_live_packet_trace_simulation.py`](04_live_packet_trace_simulation.py) | Real-time JSON-RPC packet & kernel trace inspector showing pre-state queries, Outbox holds, and LIFO rollback packets. |
 | **05** | [`05_savepoints_and_partial_rollback.py`](05_savepoints_and_partial_rollback.py) | Nested `async with tx.savepoint("..."):` for partial rollback and graceful degradation (Express Air -> Ground Shipping fallback). |
@@ -24,7 +24,7 @@ This directory contains **10 self-contained, runnable Python scripts** demonstra
 ## Running the Examples
 
 ```bash
-uv run python examples/01_quickstart_decorator.py
+uv run python examples/01_remote_mcp_server_quickstart.py
 uv run python examples/02_distributed_four_systems_saga.py
 uv run python examples/03_remote_mcp_autodiscovery.py
 uv run python examples/04_live_packet_trace_simulation.py
